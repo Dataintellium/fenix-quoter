@@ -857,56 +857,29 @@ const trackContainer=async(s)=>{
       const secret=localStorage.getItem('fenix_maersk_secret')||'';
       if(!secret){flash('Agrega Maersk Secret en Configuración','err');setTrackingLoading(x=>({...x,[s.id]:false}));return;}
       const creds=btoa('z93DABJIaE1M7n3w9tDh2LwVGHf6vq5S:'+secret);
-      const tokenRes=await fetch('https://api.maersk.com/oauth2/access_token',{
-        method:'POST',
-        headers:{'Authorization':'Basic '+creds,'Content-Type':'application/x-www-form-urlencoded'},
-        body:'grant_type=client_credentials',
-      });
-      if(!tokenRes.ok){
-        const errText=await tokenRes.text();
-        throw new Error('Auth Maersk falló ('+tokenRes.status+'): Track & Trace no habilitada — agrégala en developer.maersk.com/my-apps');
-      }
-      const tokenData=await tokenRes.json();
-      const token=tokenData.access_token;
-      const trackRes=await fetch('https://api.maersk.com/track/v1/containers/'+s.container,{
-        headers:{'Authorization':'Bearer '+token,'Consumer-Key':'z93DABJIaE1M7n3w9tDh2LwVGHf6vq5S'},
-      });
-      if(!trackRes.ok){
-        if(trackRes.status===404)throw new Error('Container '+s.container+' no encontrado en Maersk');
-        if(trackRes.status===403)throw new Error('Track & Trace no habilitada en developer.maersk.com/my-apps');
-        throw new Error('Maersk API error ('+trackRes.status+')');
-      }
+      const tokenRes=await fetch('https://api.maersk.com/oauth2/access_token',{method:'POST',headers:{'Authorization':'Basic '+creds,'Content-Type':'application/x-www-form-urlencoded'},body:'grant_type=client_credentials'});
+      if(!tokenRes.ok) throw new Error('Auth Maersk falló ('+tokenRes.status+')');
+      const token=(await tokenRes.json()).access_token;
+      const trackRes=await fetch('https://api.maersk.com/track/v1/containers/'+s.container,{headers:{'Authorization':'Bearer '+token,'Consumer-Key':'z93DABJIaE1M7n3w9tDh2LwVGHf6vq5S'}});
+      if(!trackRes.ok) throw new Error('Maersk error ('+trackRes.status+')');
       const td=await trackRes.json();
-      const events=td.containers?.[0]?.containers?.[0]?.events||[];
-      const ev=events[0]||{};
-      const statusMap={'GATE_IN':'en_transito','VESSEL_DEPARTURE':'en_transito','TRANSSHIPMENT':'en_transito','VESSEL_ARRIVAL':'en_destino','GATE_OUT':'entregada','DISCHARGED':'en_destino'};
-      tdata={
-        status:statusMap[ev.eventType]||'en_transito',
-        rawStatus:ev.eventType||'',
-        eta:td.containers?.[0]?.containers?.[0]?.eta?.slice(0,10)||null,
-        vessel:ev.vesselName||null,
-        location:ev.location?.cityName||ev.portTerminalCode?.portCode||null,
-        details:(ev.description||(ev.eventType||'')+(ev.location?.cityName?' — '+ev.location.cityName:'')).trim()||'OK',
-        carrier:'maersk',
-      };
+      const ev=(td.containers?.[0]?.containers?.[0]?.events||[])[0]||{};
+      const sm={'GATE_IN':'en_transito','VESSEL_DEPARTURE':'en_transito','VESSEL_ARRIVAL':'en_destino','GATE_OUT':'entregada','DISCHARGED':'en_destino'};
+      tdata={status:sm[ev.eventType]||'en_transito',eta:td.containers?.[0]?.containers?.[0]?.eta?.slice(0,10)||null,vessel:ev.vesselName||null,location:ev.location?.cityName||null,details:ev.description||ev.eventType||'OK',carrier:'maersk'};
     }else{
       const key=localStorage.getItem('fenix_ak')||'';
-      if(!key){flash('Agrega API key Anthropic en tab Mercado para trackear COSCO','err');setTrackingLoading(x=>({...x,[s.id]:false}));return;}
-      const res=await fetch('https://api.anthropic.com/v1/messages',{
-        method:'POST',
-        headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-        body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:600,tools:[{type:'web_search_20250305',name:'web_search'}],messages:[{role:'user',content:'Track container '+s.container+' from '+(s.naviera||'COSCO')+'. Return ONLY JSON: {"status":"in_transit|arrived|departed|delayed","eta":"YYYY-MM-DD or null","vessel":"name or null","location":"current port or null","details":"one sentence"}'}]})
-      });
+      if(!key){flash('Agrega API key Anthropic en Mercado','err');setTrackingLoading(x=>({...x,[s.id]:false}));return;}
+      const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:600,tools:[{type:'web_search_20250305',name:'web_search'}],messages:[{role:'user',content:'Track container '+s.container+'. Return ONLY JSON: {"status":"in_transit|arrived|departed|delayed","eta":"YYYY-MM-DD or null","vessel":"name or null","location":"port or null","details":"one sentence"}'}]})});
       const d=await res.json();
       const txt=(d.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('').trim();
-      try{const m=txt.match(/\{[\s\S]*\}/);if(m)tdata=JSON.parse(m[0]);}catch(e){}
+      try{const m=txt.match(/\{[\s\S]*?\}/);if(m)tdata=JSON.parse(m[0]);}catch(e){}
     }
     updShipment(s.id,{trackingData:tdata,trackingUpdatedAt:new Date().toISOString()});
     if(tdata.eta&&tdata.eta!==s.eta)updShipment(s.id,{eta:tdata.eta});
-    flash('🔄 '+s.container+': '+(tdata.details||tdata.status||'actualizado'));
-  }catch(e){flash('Error tracking: '+e.message,'err');}
+    flash('🔄 '+s.container+': '+(tdata.details||tdata.status||'OK'));
+  }catch(e){flash('Error: '+e.message,'err');}
   setTrackingLoading(x=>({...x,[s.id]:false}));
-};};
+};
 
 // Parse Excel-like paste import
 const parseImport=txt=>{
@@ -1786,64 +1759,28 @@ const flags=s=>{const today=new Date();const warns=[];
 const trackContainer=async(s)=>{
   if(!s.container||s.container==='PENDIENTE'){flash('Sin # contenedor para trackear','err');return;}
   setTrackingLoading(x=>({...x,[s.id]:true}));
-  const prefix=(s.container||'').slice(0,4).toUpperCase();
-  const isMaersk=['MNBU','MMAU','SUDU','MWCU','MSKU','MRKU','TRHU'].includes(prefix);
   try{
-    let tdata={status:'unknown',eta:null,vessel:null,location:null,details:'Sin datos'};
-    if(isMaersk){
-      const secret=localStorage.getItem('fenix_maersk_secret')||'';
-      if(!secret){flash('Agrega Maersk Secret en Configuración','err');setTrackingLoading(x=>({...x,[s.id]:false}));return;}
-      const creds=btoa('z93DABJIaE1M7n3w9tDh2LwVGHf6vq5S:'+secret);
-      const tokenRes=await fetch('https://api.maersk.com/oauth2/access_token',{
-        method:'POST',
-        headers:{'Authorization':'Basic '+creds,'Content-Type':'application/x-www-form-urlencoded'},
-        body:'grant_type=client_credentials',
-      });
-      if(!tokenRes.ok){
-        const errText=await tokenRes.text();
-        throw new Error('Auth Maersk falló ('+tokenRes.status+'): Track & Trace no habilitada — agrégala en developer.maersk.com/my-apps');
-      }
-      const tokenData=await tokenRes.json();
-      const token=tokenData.access_token;
-      const trackRes=await fetch('https://api.maersk.com/track/v1/containers/'+s.container,{
-        headers:{'Authorization':'Bearer '+token,'Consumer-Key':'z93DABJIaE1M7n3w9tDh2LwVGHf6vq5S'},
-      });
-      if(!trackRes.ok){
-        if(trackRes.status===404)throw new Error('Container '+s.container+' no encontrado en Maersk');
-        if(trackRes.status===403)throw new Error('Track & Trace no habilitada en developer.maersk.com/my-apps');
-        throw new Error('Maersk API error ('+trackRes.status+')');
-      }
-      const td=await trackRes.json();
-      const events=td.containers?.[0]?.containers?.[0]?.events||[];
-      const ev=events[0]||{};
-      const statusMap={'GATE_IN':'en_transito','VESSEL_DEPARTURE':'en_transito','TRANSSHIPMENT':'en_transito','VESSEL_ARRIVAL':'en_destino','GATE_OUT':'entregada','DISCHARGED':'en_destino'};
-      tdata={
-        status:statusMap[ev.eventType]||'en_transito',
-        rawStatus:ev.eventType||'',
-        eta:td.containers?.[0]?.containers?.[0]?.eta?.slice(0,10)||null,
-        vessel:ev.vesselName||null,
-        location:ev.location?.cityName||ev.portTerminalCode?.portCode||null,
-        details:(ev.description||(ev.eventType||'')+(ev.location?.cityName?' — '+ev.location.cityName:'')).trim()||'OK',
-        carrier:'maersk',
-      };
-    }else{
-      const key=localStorage.getItem('fenix_ak')||'';
-      if(!key){flash('Agrega API key Anthropic en tab Mercado para trackear COSCO','err');setTrackingLoading(x=>({...x,[s.id]:false}));return;}
-      const res=await fetch('https://api.anthropic.com/v1/messages',{
-        method:'POST',
-        headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-        body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:600,tools:[{type:'web_search_20250305',name:'web_search'}],messages:[{role:'user',content:'Track container '+s.container+' from '+(s.naviera||'COSCO')+'. Return ONLY JSON: {"status":"in_transit|arrived|departed|delayed","eta":"YYYY-MM-DD or null","vessel":"name or null","location":"current port or null","details":"one sentence"}'}]})
-      });
-      const d=await res.json();
-      const txt=(d.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('').trim();
-      try{const m=txt.match(/\{[\s\S]*\}/);if(m)tdata=JSON.parse(m[0]);}catch(e){}
-    }
+    const key=localStorage.getItem('fenix_ak')||'';
+    if(!key){flash('Agrega API key de Anthropic en tab Mercado','err');setTrackingLoading(x=>({...x,[s.id]:false}));return;}
+    const res=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-6',max_tokens:1000,
+        tools:[{type:'web_search_20250305',name:'web_search'}],
+        messages:[{role:'user',content:`Track container ${s.container} from ${s.naviera||'Maersk'}. Search for current status, ETA, and vessel. Return ONLY JSON: {"status":"in_transit|arrived|departed|delayed","eta":"YYYY-MM-DD or null","vessel":"vessel name or null","location":"current port or null","details":"one sentence status"}`}]
+      })
+    });
+    const d=await res.json();
+    const txt=(d.content||[]).filter(b=>b.type==='text').map(b=>b.text).join('').trim();
+    let tdata={status:'unknown',eta:null,vessel:null,location:null,details:'No data'};
+    try{const m=txt.match(/\{[\s\S]*\}/);if(m)tdata=JSON.parse(m[0]);}catch(e){}
     updShipment(s.id,{trackingData:tdata,trackingUpdatedAt:new Date().toISOString()});
     if(tdata.eta&&tdata.eta!==s.eta)updShipment(s.id,{eta:tdata.eta});
-    flash('🔄 '+s.container+': '+(tdata.details||tdata.status||'actualizado'));
+    flash(`Container ${s.container}: ${tdata.details||tdata.status}`);
   }catch(e){flash('Error tracking: '+e.message,'err');}
   setTrackingLoading(x=>({...x,[s.id]:false}));
-};};
+};
 
 // Parse Excel-like paste import
 const parseImport=txt=>{
